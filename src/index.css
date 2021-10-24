@@ -5,8 +5,16 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background-color: #303030;
-  color: #FFFFFF;
+  background-color: #ffffff;
+  color: #222222;
+}
+center{
+  text-align: center;
+  display: block;
+  justify-content: center;
+  align-items: center;
+  margin: auto;
+  width: 100%;
 }
 
 code {
