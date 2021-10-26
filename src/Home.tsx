@@ -8,9 +8,8 @@ import * as anchor from "@project-serum/anchor";
 
 import { LAMPORTS_PER_SOL } from "@solana/web3.js";
 
-import { useAnchorWallet } from "@solana/wallet-adapter-react";
+import { useWallet } from "@solana/wallet-adapter-react";
 import { WalletDialogButton } from "@solana/wallet-adapter-material-ui";
-
 import {
   CandyMachine,
   awaitTransactionSignatureConfirmation,
@@ -18,6 +17,25 @@ import {
   mintOneToken,
   shortenAddress,
 } from "./candy-machine";
+
+import "./Home.css";
+import IconButton from "@material-ui/core/IconButton";
+import Link from "@material-ui/core/Link";
+import DialogTitle from "@material-ui/core/DialogTitle";
+import DialogContent from "@material-ui/core/DialogContent";
+import DialogActions from "@material-ui/core/DialogActions";
+import Dialog from "@material-ui/core/Dialog";
+import CheckCircleOutlinedIcon from "@material-ui/icons/CheckCircleOutlined";
+import ErrorOutlineOutlinedIcon from "@material-ui/icons/ErrorOutlineOutlined";
+import WarningOutlinedIcon from "@material-ui/icons/WarningOutlined";
+import InfoOutlinedIcon from "@material-ui/icons/InfoOutlined";
+import CloseOutlinedIcon from "@material-ui/icons/CloseOutlined";
+import Header from "./Layout/Header/Header";
+import Background from "./Layout/Background/Background";
+import Slider from "@mui/material/Slider";
+import { BsInfoCircle } from "react-icons/bs";
+
+
 
 const ConnectButton = styled(WalletDialogButton)``;
 
@@ -38,13 +56,11 @@ export interface HomeProps {
 
 const Home = (props: HomeProps) => {
   const [balance, setBalance] = useState<number>();
+  const [nftCount, setNftCount] = useState<number>(0);
   const [isActive, setIsActive] = useState(false); // true when countdown completes
   const [isSoldOut, setIsSoldOut] = useState(false); // true when items remaining is zero
   const [isMinting, setIsMinting] = useState(false); // true when user got to press MINT
-
-  const [itemsAvailable, setItemsAvailable] = useState(0);
-  const [itemsRedeemed, setItemsRedeemed] = useState(0);
-  const [itemsRemaining, setItemsRemaining] = useState(0);
+  const [mintValue, setMintValue] = useState(1);
 
   const [alertState, setAlertState] = useState<AlertState>({
     open: false,
@@ -54,186 +70,365 @@ const Home = (props: HomeProps) => {
 
   const [startDate, setStartDate] = useState(new Date(props.startDate));
 
-  const wallet = useAnchorWallet();
+  const wallet = useWallet();
   const [candyMachine, setCandyMachine] = useState<CandyMachine>();
 
-  const refreshCandyMachineState = () => {
+  const onMint = async () => {
+
+    for (let index = 0; index < mintValue; index++) { 
+      try {
+        setIsMinting(true);
+        if (wallet.connected && candyMachine?.program && wallet.publicKey) {
+          const mintTxId = await mintOneToken(
+            candyMachine,
+            props.config,
+            wallet.publicKey,
+            props.treasury
+          );
+  
+          const status = await awaitTransactionSignatureConfirmation(
+            mintTxId,
+            props.txTimeout,
+            props.connection,
+            "singleGossip",
+            false
+          );
+  
+          if (!status?.err) {
+            setAlertState({
+              open: true,
+              message: "Congratulations, Successfully Minted.",
+              subMessage: `If you want to mint one more, press "MINT" again.`,
+              severity: "success",
+            });
+          } else {
+            setAlertState({
+              open: true,
+              message: "Error",
+              subMessage: "Minting failed!! Please try again.",
+              severity: "error",
+            });
+          }
+        }
+      } catch (error: any) {
+        // TODO: blech:
+        let message = "Error";
+        let subMessage = error.msg || "Minting failed!! Please try again.";
+        if (!error.msg) {
+          if (error.message.indexOf("0x138")) {
+          } else if (error.message.indexOf("0x137")) {
+            subMessage = `SOLD OUT!`;
+          } else if (error.message.indexOf("0x135")) {
+            subMessage = `Insufficient funds to mint!! Please fund your wallet.`;
+          }
+        } else {
+          if (error.code === 311) {
+            subMessage = `SOLD OUT!`;
+            setIsSoldOut(true);
+          } else if (error.code === 312) {
+            subMessage = `Minting period hasn't started yet.`;
+          }
+        }
+  
+        setAlertState({
+          open: true,
+          message,
+          subMessage,
+          severity: "error",
+        });
+      } finally {
+        if (wallet?.publicKey) {
+          const balance = await props.connection.getBalance(wallet?.publicKey);
+          setBalance(balance / LAMPORTS_PER_SOL);
+          await getNFTAmount();
+        }
+        setIsMinting(false);
+      }
+    }
+    
+  };
+
+  useEffect(() => {
     (async () => {
-      if (!wallet) return;
+      if (wallet?.publicKey) {
+        const balance = await props.connection.getBalance(wallet.publicKey);
+        setBalance(balance / LAMPORTS_PER_SOL);
+        await getNFTAmount();
+      }
+    })();
+  }, [wallet, props.connection]);
 
-      const {
-        candyMachine,
-        goLiveDate,
-        itemsAvailable,
-        itemsRemaining,
-        itemsRedeemed,
-      } = await getCandyMachineState(
-        wallet as anchor.Wallet,
-        props.candyMachineId,
-        props.connection
-      );
+  useEffect(() => {
+    (async () => {
+      setInterval(async () => {
+        await getNFTAmount();
+      }, 20000);
+    })();
+  });
 
-      setItemsAvailable(itemsAvailable);
-      setItemsRemaining(itemsRemaining);
-      setItemsRedeemed(itemsRedeemed);
+  useEffect(() => {
+    (async () => {
+      if (isSoldOut) {
+        setAlertState({
+          open: true,
+          message: "SOLD OUT",
+          subMessage: `Thanks for minting from public sale.`,
+          severity: "success",
+        });
+      }
+    })();
+  }, [isSoldOut]);
+
+  useEffect(() => {
+    (async () => {
+      if (
+        !wallet ||
+        !wallet.publicKey ||
+        !wallet.signAllTransactions ||
+        !wallet.signTransaction
+      ) {
+        return;
+      }
+
+      const anchorWallet = {
+        publicKey: wallet.publicKey,
+        signAllTransactions: wallet.signAllTransactions,
+        signTransaction: wallet.signTransaction,
+      } as anchor.Wallet;
+
+      const { candyMachine, goLiveDate, itemsRemaining } =
+        await getCandyMachineState(
+          anchorWallet,
+          props.candyMachineId,
+          props.connection
+        );
 
       setIsSoldOut(itemsRemaining === 0);
       setStartDate(goLiveDate);
       setCandyMachine(candyMachine);
     })();
+  }, [wallet, props.candyMachineId, props.connection]);
+
+  const getNFTAmount = async () => {
+    const anchorWallet = {
+      publicKey: wallet.publicKey,
+      signAllTransactions: wallet.signAllTransactions,
+      signTransaction: wallet.signTransaction,
+    } as anchor.Wallet;
+
+    const { itemsRemaining} = await getCandyMachineState(
+      anchorWallet,
+      props.candyMachineId,
+      props.connection
+    );
+   
+     let count = 7777 - itemsRemaining;   
+
+    setNftCount(count)
+    setIsSoldOut(itemsRemaining === 0);
   };
 
-  const onMint = async () => {
-    try {
-      setIsMinting(true);
-      if (wallet && candyMachine?.program) {
-        const mintTxId = await mintOneToken(
-          candyMachine,
-          props.config,
-          wallet.publicKey,
-          props.treasury
-        );
+  const mintRange = [
+    {
+      value: 0,
+      label: "1",
+    },
+    {
+      value: 25,
+      label: "2",
+    },
+    {
+      value: 50,
+      label: "3",
+    },
+    {
+      value: 75,
+      label: "4",
+    },
+    {
+      value: 100,
+      label: "5",
+    },
+  ];
 
-        const status = await awaitTransactionSignatureConfirmation(
-          mintTxId,
-          props.txTimeout,
-          props.connection,
-          "singleGossip",
-          false
-        );
-
-        if (!status?.err) {
-          setAlertState({
-            open: true,
-            message: "Congratulations! Mint succeeded!",
-            severity: "success",
-          });
-        } else {
-          setAlertState({
-            open: true,
-            message: "Mint failed! Please try again!",
-            severity: "error",
-          });
-        }
-      }
-    } catch (error: any) {
-      // TODO: blech:
-      let message = error.msg || "Minting failed! Please try again!";
-      if (!error.msg) {
-        if (error.message.indexOf("0x138")) {
-        } else if (error.message.indexOf("0x137")) {
-          message = `SOLD OUT!`;
-        } else if (error.message.indexOf("0x135")) {
-          message = `Insufficient funds to mint. Please fund your wallet.`;
-        }
-      } else {
-        if (error.code === 311) {
-          message = `SOLD OUT!`;
-          setIsSoldOut(true);
-        } else if (error.code === 312) {
-          message = `Minting period hasn't started yet.`;
-        }
-      }
-
-      setAlertState({
-        open: true,
-        message,
-        severity: "error",
-      });
-    } finally {
-      if (wallet) {
-        const balance = await props.connection.getBalance(wallet.publicKey);
-        setBalance(balance / LAMPORTS_PER_SOL);
-      }
-      setIsMinting(false);
-      refreshCandyMachineState();
-    }
+  const onSliderValueChange = (event: any, newValue: any) => {
+    let toMintValue =Math.floor(newValue / 25) == 0 ? 1 : Math.floor(newValue / 25) + 1;
+    setMintValue(toMintValue);
   };
-
-  useEffect(() => {
-    (async () => {
-      if (wallet) {
-        const balance = await props.connection.getBalance(wallet.publicKey);
-        setBalance(balance / LAMPORTS_PER_SOL);
-      }
-    })();
-  }, [wallet, props.connection]);
-
-  useEffect(refreshCandyMachineState, [
-    wallet,
-    props.candyMachineId,
-    props.connection,
-  ]);
 
   return (
-    <main>
-      {wallet && (
-        <p>Wallet {shortenAddress(wallet.publicKey.toBase58() || "")}</p>
-      )}
-
-      {wallet && <p>Balance: {(balance || 0).toLocaleString()} SOL</p>}
-
-      {wallet && <p>Total Available: {itemsAvailable}</p>}
-
-      {wallet && <p>Redeemed: {itemsRedeemed}</p>}
-
-      {wallet && <p>Remaining: {itemsRemaining}</p>}
-
-      <MintContainer>
-        {!wallet ? (
-          <ConnectButton>Connect Wallet</ConnectButton>
-        ) : (
-          <MintButton
-            disabled={isSoldOut || isMinting || !isActive}
-            onClick={onMint}
-            variant="contained"
-          >
-            {isSoldOut ? (
-              "SOLD OUT"
-            ) : isActive ? (
-              isMinting ? (
-                <CircularProgress />
-              ) : (
-                "MINT"
-              )
-            ) : (
-              <Countdown
-                date={startDate}
-                onMount={({ completed }) => completed && setIsActive(true)}
-                onComplete={() => setIsActive(true)}
-                renderer={renderCounter}
-              />
+      <div className="page-container">
+      <div className="page-bg"></div>
+      <section className="page-section">
+      <div className="section-body">
+      <div className="section-content">
+        <div className="flex-column">
+          <span className= {[
+                "mint-section-title title-center",
+                wallet.connected ? "wallet-connected-title" : "",
+              ].join(" ")}><img id="adjust" src="Logo/logo1.png"></img></span>
+                 <div className="mint-row-center">
+            {wallet.connected && (
+              <span className="wallet-address">Wallet Address: {shortenAddress(wallet.publicKey?.toBase58() || "")}</span>
             )}
-          </MintButton>
-        )}
-      </MintContainer>
+          </div>
+          <div className="mint-desc-grid">
+            <div className="mint-desc-container">
+              <span className="mint-desc-heading">Wallet Balance</span>
+              {!wallet.connected ? (
+                <span className="mint-desc-value">0.00 SOL</span>
+                ) : (
+                <span className="mint-desc-value">{(balance || 0).toLocaleString()}</span>
+              )}
+            </div>
+            <div className="mint-desc-container">
+              <span className="mint-desc-heading">NFT Price</span>
+              <span className="mint-desc-value">0.99 SOL</span>
+            </div>
+            <div className="mint-desc-container">
+              <span className="mint-desc-heading">NFTs Minted</span>
+              {!wallet.connected ? (
+                <span className="mint-desc-value">0</span>
+                ) : (
+                <span className="mint-desc-value">{nftCount}</span>
+              )}
+            </div>
+          </div>
+          <div className="mint-row-center">
+            {!wallet.connected && (
+              <ConnectButton className="connect-wallet-btn">
+                Connect Wallet
+              </ConnectButton>
+            )}
+          </div>
+       
+          <MintContainer className="mintContainer">
+          {wallet.connected && (
+            <div className="flex-column">
+              <div className="mint-slider-container">
+              <div className="mint-slider">
+              <Slider
+                          className="slider-css"
+                          defaultValue={0}
+                          step={25}
+                          min={1}
+                          marks={mintRange}
+                          valueLabelDisplay="on"
+                          onChange={onSliderValueChange}
+                          valueLabelFormat={(value) => (
+                            <div>
+                              {Math.floor(value / 25) == 0
+                                ? 1
+                                : Math.floor(value / 25) + 1}
+                            </div>
+                          )}
+                        />
+              </div>
+              <MintButton
+                  className="mint-btn"
+                  disabled={isSoldOut || isMinting || !isActive}
+                  onClick={onMint}
+                  variant="contained"
+                >
+                  {isSoldOut ? (
+                    "Sold Out"
+                  ) : isActive ? (
+                    isMinting ? (
+                      <CircularProgress />
+                    ) : (
+                      <span> {mintValue} Mint</span>
+                    )
+                  ) : (
+                    <Countdown
+                      date={startDate}
+                      onMount={({ completed }) =>
+                        completed && setIsActive(true)
+                      }
+                      onComplete={() => setIsActive(true)}
+                      renderer={renderCounter}
+                    />
+                  )}
+                </MintButton>
+              </div>
+            </div>
+          )}
+        </MintContainer>
+        </div>
+      </div>
+    </div>
+      </section>
+      <Background />
 
-      <Snackbar
+      <Dialog
+        className="messageContainer"
+        aria-labelledby="confirmation-dialog-title"
         open={alertState.open}
-        autoHideDuration={6000}
         onClose={() => setAlertState({ ...alertState, open: false })}
       >
-        <Alert
-          onClose={() => setAlertState({ ...alertState, open: false })}
-          severity={alertState.severity}
-        >
-          {alertState.message}
-        </Alert>
-      </Snackbar>
-    </main>
+        <DialogTitle className="dialogHeading" id="confirmation-dialog-title">
+          <div className="flexRowBetween">
+            <span className="dialogTitle"></span>
+            <IconButton
+              onClick={() => setAlertState({ ...alertState, open: false })}
+            >
+              <CloseOutlinedIcon className="dialogCloseIcon" />
+            </IconButton>
+          </div>
+        </DialogTitle>
+        <DialogContent>
+          <div className="flexColumnCenter">
+            {alertState.severity === "error" && (
+              <ErrorOutlineOutlinedIcon className="errorIcon" />
+            )}
+            {alertState.severity === "success" && (
+              <CheckCircleOutlinedIcon className="successIcon" />
+            )}
+            {alertState.severity === "warning" && (
+              <WarningOutlinedIcon className="warningIcon" />
+            )}
+            {alertState.severity === "info" && (
+              <InfoOutlinedIcon className="infoIcon" />
+            )}
+            <span
+              className={[
+                "default-class",
+                alertState.severity === "error" ? "errorMsg" : "",
+                alertState.severity === "success" ? "successMsg" : "",
+                alertState.severity === "warning" ? "warningMsg" : "",
+                alertState.severity === "info" ? "infoMsg" : "",
+              ].join(" ")}
+            >
+              {alertState.message}
+            </span>
+            <span
+              className={[
+                "subMessage",
+                alertState.severity === "error" ? "errorMsg" : "",
+                alertState.severity === "success" ? "successMsg" : "",
+                alertState.severity === "warning" ? "warningMsg" : "",
+                alertState.severity === "info" ? "infoMsg" : "",
+              ].join(" ")}
+            >
+              {alertState.subMessage}
+            </span>
+          </div>
+        </DialogContent>
+      </Dialog> 
+    </div>
   );
 };
 
 interface AlertState {
   open: boolean;
   message: string;
+  subMessage?: string;
   severity: "success" | "info" | "warning" | "error" | undefined;
 }
 
 const renderCounter = ({ days, hours, minutes, seconds, completed }: any) => {
   return (
     <CounterText>
-      {hours + (days || 0) * 24} hours, {minutes} minutes, {seconds} seconds
+      {hours} hours, {minutes} minutes, {seconds} seconds
     </CounterText>
   );
 };
